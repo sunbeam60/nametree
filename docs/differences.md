@@ -10,6 +10,8 @@ The design says a separator is "the first key in `child`". The implementation us
 
 Why: a deleted counter can be reused. If a run's counter-1 name is deleted, the right page's first key becomes `prefix | 2`. A later name in the same run then gets counter 1 and lands below a separator of `prefix | 2`. Lookups still work, because they route by `run_last`, but "separator ≤ every key in its child" would no longer hold, and fsck could not check it. With `prefix | 1` the invariant holds exactly.
 
+`check()` rejects any separator whose counter is not 1. A tree written to the design's literal rule would fail that check, so the design's inner-slot table ("Separator: the first key in `child`") should eventually say "the lowest possible key of the run that starts `child`". That needs agreement before the design document changes.
+
 ### CollisionOverflow also covers a run too large for one page
 
 The collision rule forbids splitting a run across leaves. A run of up to 15 long names can need more than one page (for example 15 × 277 bytes > 4 KiB). An insert that would need such a split fails with `CollisionOverflow`, the same as a 16th name in a run, and writes nothing. Only a broken or test hasher can hit this.
@@ -30,6 +32,13 @@ Building or compacting a page zeroes it first, so free space never carries stale
 
 As in the design, key order and key counters are checked on every page read in debug builds only. Release builds rely on `check()` for these.
 
+Two checks run on every read beyond the design's always-on list, because without them a corrupt page could cause a panic or a bad write instead of `Error::Corrupt`. Both were found by an adversarial review:
+
+* **`frag_bytes` must be exact.** It must equal the heap bytes not covered by live names; the design lists this under fsck only. Free space, reclaimable space and used bytes are all derived from it. An overstated value made a full leaf look underfull, so a merge folded two full leaves into one page and ran off its end. On insert, compaction then "recovered" bytes that did not exist. The sum is taken in the slot loop the read already runs, so it costs nothing extra.
+* **Pages reached off the descent path have their levels checked.** These are a merge's sibling and the pages walked to find the previous leaf. A child pointer aimed at a page of the wrong level made a merge read an inner page as a leaf.
+
+Name offsets are also added with overflow checks, so a corrupt offset near `u32::MAX` cannot wrap on 32-bit targets.
+
 ## API
 
 ### Additions
@@ -37,7 +46,7 @@ As in the design, key order and key counters are checked on every page read in d
 * `Error::PageSize`: the store's page size is below `min_page_size::<V>()` or above `MAX_PAGE_SIZE`. The design lists no error for this.
 * `iter()` (same as `iter_from(0)`) and `iter_filtered(cookie, filter)`, the design's type filter. Name bytes are read only for entries that pass the filter.
 * `is_empty()`: cheap, because an empty tree is a zero-length store. Yak needs it before removing a directory.
-* `check()` and `check_with(value_ok)`: the full fsck. `check_with` takes a value predicate, for rules such as Yak's "type is not 0", since the library knows nothing about the value.
+* `check()` and `check_with(value_ok)`: the full fsck. `check_with` takes a value predicate, for rules such as Yak's "type is not 0", since the library knows nothing about the value. The predicate may read from the tree.
 * `store_mut()`, `hasher()`, `page_size()`, `min_page_size::<V>()`, and `impl NameHasher for &H`.
 * `MemStore::from_bytes` / `as_bytes` / `into_bytes`, and `FileStore::new` / `file` / `into_file`.
 * `nametree::zerocopy` re-export, so hosts use the same zerocopy version for their value types.

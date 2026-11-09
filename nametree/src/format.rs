@@ -287,18 +287,24 @@ fn validate_leaf<V: Value>(page: &[u8], count: usize) -> Result<(), CorruptKind>
     if heap_start < end || heap_start > page_size {
         return Err(CorruptKind::HeapStart);
     }
-    if header.frag_bytes.get() as usize > page_size - heap_start {
-        return Err(CorruptKind::FragBytes);
-    }
+    let mut live = 0;
     for slot in leaf_slots::<V>(page) {
         let offset = slot.offset.get() as usize;
         let len = slot.name_len as usize;
         if len == 0 {
             return Err(CorruptKind::NameLength);
         }
-        if offset < heap_start || offset + len > page_size {
+        // Checked, because on 32-bit targets an offset near u32::MAX would wrap.
+        if offset < heap_start || offset.checked_add(len).is_none_or(|e| e > page_size) {
             return Err(CorruptKind::NameOffset);
         }
+        live += len;
+    }
+    // frag_bytes must account exactly for the heap bytes not covered by names. Free space,
+    // reclaimable space and used bytes are all derived from it, so an overstated value would
+    // make compaction or a merge try to fit more into a page than it holds.
+    if (page_size - heap_start).checked_sub(live) != Some(header.frag_bytes.get() as usize) {
+        return Err(CorruptKind::FragBytes);
     }
     #[cfg(debug_assertions)]
     {

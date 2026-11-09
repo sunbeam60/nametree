@@ -77,6 +77,13 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
                     separator: 0,
                 }
             };
+            // The sibling comes from the parent's slots, not the descent path, so its level was
+            // never checked. A corrupt pointer could also name the same page twice.
+            if pair.left == pair.right {
+                return Err(Error::Corrupt(CorruptKind::DuplicatePage));
+            }
+            self.expect_level(pair.left, level)?;
+            self.expect_level(pair.right, level)?;
             let folded = if level == LEAF_LEVEL {
                 self.merge_leaves(pair)?
             } else {
@@ -248,14 +255,11 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
     fn first_key_below(&mut self, index: u32) -> Res<(u32, u64), S> {
         let level = format::level(self.pager.read(index)?);
         let mut page_index = index;
-        for _ in LEAF_LEVEL..level {
+        for at in (LEAF_LEVEL..level).rev() {
             page_index = format::link(self.pager.read(page_index)?);
+            self.expect_level(page_index, at)?;
         }
-        let page = self.pager.read(page_index)?;
-        if format::level(page) != LEAF_LEVEL {
-            return Err(Error::Corrupt(CorruptKind::LevelMismatch));
-        }
-        match leaf_slots::<V>(page).first() {
+        match leaf_slots::<V>(self.pager.read(page_index)?).first() {
             Some(slot) => Ok((level, slot.key.get())),
             None => Err(Error::Corrupt(CorruptKind::EmptyPage)),
         }
@@ -268,11 +272,15 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         else {
             return Ok(None);
         };
+        // These pages are off the route, so check their levels: on a corrupt tree, treating a
+        // leaf as an inner page would pick an arbitrary page and overwrite its link.
         let mut index = inner::child(self.pager.read(route.page(level))?, route.pos(level) - 1);
-        for _ in LEAF_LEVEL + 1..level {
+        for at in (LEAF_LEVEL + 1..level).rev() {
+            self.expect_level(index, at)?;
             let page = self.pager.read(index)?;
             index = inner::child(page, format::slot_count(page));
         }
+        self.expect_level(index, LEAF_LEVEL)?;
         Ok(Some(index))
     }
 

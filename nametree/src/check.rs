@@ -2,11 +2,12 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use crate::error::{CorruptKind, Error};
 use crate::format::{
-    self, hash_prefix, inner_slots, is_valid_key, key_prefix, leaf_slots, Value, LEAF_LEVEL,
-    NO_LINK, ROOT,
+    self, hash_prefix, inner_slots, is_valid_key, key_counter, key_prefix, leaf_slots, Value,
+    LEAF_LEVEL, MIN_COUNTER, NO_LINK, ROOT,
 };
 use crate::hasher::NameHasher;
 use crate::pager::Pager;
@@ -37,29 +38,30 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
     }
 
     /// Like [`check`](Self::check), and also rejects any stored value for which `value_ok`
-    /// returns `false` (Yak, for example, rejects an entry type of 0).
+    /// returns `false` (Yak, for example, rejects an entry type of 0). `value_ok` may read from
+    /// the tree.
     pub fn check_with(
         &self,
         value_ok: impl FnMut(&V) -> bool,
     ) -> Result<CheckReport, Error<S::Error>> {
-        let mut pager = self.pager.borrow_mut();
-        pager.begin()?;
-        pager.discard();
-        let pages = pager.count();
+        let pages = {
+            let mut pager = self.pager.borrow_mut();
+            pager.begin()?;
+            pager.discard();
+            pager.count()
+        };
+        if pages == 0 {
+            return Ok(CheckReport::default());
+        }
         let mut checker = Checker {
-            pager: &pager,
+            pager: &self.pager,
             hasher: &self.hasher,
             value_ok,
             visited: vec![false; pages as usize],
             leaves: Vec::new(),
             names: 0,
         };
-        if pages == 0 {
-            return Ok(CheckReport::default());
-        }
-        let mut root = vec![0; pager.page_size()];
-        pager.read_detached(ROOT, &mut root)?;
-        let height = format::level(&root);
+        let height = format::level(&checker.read(ROOT)?);
         checker.walk::<V>(ROOT, height, 0, None)?;
         checker.finish()?;
         Ok(CheckReport {
@@ -80,7 +82,8 @@ struct LeafInfo {
 }
 
 struct Checker<'a, S, H, F> {
-    pager: &'a Pager<S>,
+    /// Borrowed only for each page read, so `value_ok` can call back into the tree.
+    pager: &'a RefCell<Pager<S>>,
     hasher: &'a H,
     value_ok: F,
     visited: Vec<bool>,
@@ -95,6 +98,14 @@ fn corrupt<T, E>(kind: CorruptKind) -> Result<T, Error<E>> {
 }
 
 impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
+    /// A validated copy of page `index`.
+    fn read(&self, index: u32) -> Res<Vec<u8>, S> {
+        let pager = self.pager.borrow();
+        let mut page = vec![0; pager.page_size()];
+        pager.read_detached(index, &mut page)?;
+        Ok(page)
+    }
+
     /// Checks the subtree at `index`, which must be at `level` and hold only keys in
     /// `low..high` (`high` of `None` meaning no upper bound).
     fn walk<V: Value>(&mut self, index: u32, level: u32, low: u64, high: Option<u64>) -> Res<(), S>
@@ -106,8 +117,7 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
             return corrupt(CorruptKind::DuplicatePage);
         }
         *seen = true;
-        let mut page = vec![0; self.pager.page_size()];
-        self.pager.read_detached(index, &mut page)?;
+        let page = self.read(index)?;
         if format::level(&page) != level {
             return corrupt(CorruptKind::LevelMismatch);
         }
@@ -127,6 +137,14 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
         }
         if level == LEAF_LEVEL {
             return self.check_leaf::<V>(index, &page);
+        }
+        // Lookups route by a run's highest possible key, which only reaches the run's leaf if
+        // every separator is a run's lowest possible key (collision counter 1).
+        if keys
+            .iter()
+            .any(|&k| !is_valid_key(k) || key_counter(k) != MIN_COUNTER)
+        {
+            return corrupt(CorruptKind::Separator);
         }
         for pos in 0..=keys.len() {
             let child_low = if pos == 0 { low } else { keys[pos - 1] };
@@ -162,7 +180,7 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
                 return corrupt(CorruptKind::DuplicateName);
             }
         }
-        check_heap::<V>(page)?;
+        check_overlap::<V>(page)?;
 
         let (Some(first), Some(last)) = (slots.first(), slots.last()) else {
             return corrupt(CorruptKind::EmptyPage);
@@ -195,8 +213,9 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
     }
 }
 
-/// Names must not overlap, and `frag_bytes` must equal the heap bytes not covered by names.
-fn check_heap<V: Value>(page: &[u8]) -> Result<(), CorruptKind> {
+/// Names must not overlap. (Every read already checks that `frag_bytes` matches the heap bytes
+/// not covered by names, and that each name lies inside the heap.)
+fn check_overlap<V: Value>(page: &[u8]) -> Result<(), CorruptKind> {
     let mut names: Vec<(usize, usize)> = leaf_slots::<V>(page)
         .iter()
         .map(|s| (s.offset.get() as usize, s.name_len as usize))
@@ -204,12 +223,6 @@ fn check_heap<V: Value>(page: &[u8]) -> Result<(), CorruptKind> {
     names.sort_unstable();
     if names.windows(2).any(|w| w[0].0 + w[0].1 > w[1].0) {
         return Err(CorruptKind::NameOverlap);
-    }
-    let live: usize = names.iter().map(|&(_, len)| len).sum();
-    let header = format::header(page);
-    let heap = page.len() - header.heap_start.get() as usize;
-    if header.frag_bytes.get() as usize != heap - live {
-        return Err(CorruptKind::FragBytes);
     }
     Ok(())
 }

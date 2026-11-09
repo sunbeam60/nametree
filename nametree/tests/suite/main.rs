@@ -5,6 +5,7 @@ mod common;
 
 mod api;
 mod collisions;
+mod corruption;
 mod faults;
 mod format;
 mod model;

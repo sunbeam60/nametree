@@ -281,20 +281,25 @@ impl<'a, S: PageStore, V: Value> Ctx<'a, S, V> {
         let mut at = format::level(self.pager.read(ROOT)?);
         path.height = at;
         while at > level {
-            let page = self.pager.read(index)?;
-            if format::level(page) != at {
-                return Err(Error::Corrupt(CorruptKind::LevelMismatch));
-            }
-            let (pos, child) = inner::route(page, key);
+            self.expect_level(index, at)?;
+            let (pos, child) = inner::route(self.pager.read(index)?, key);
             path.set(at, index, pos);
             index = child;
             at -= 1;
         }
         path.set(at, index, 0);
-        if format::level(self.pager.read(index)?) != at {
-            return Err(Error::Corrupt(CorruptKind::LevelMismatch));
-        }
+        self.expect_level(index, at)?;
         Ok(index)
+    }
+
+    /// Checks that page `index` sits at `level`, as its parent implies. Every page reached
+    /// through a child pointer must pass this before it is used as a leaf or inner page.
+    pub(crate) fn expect_level(&mut self, index: u32, level: u32) -> Res<(), S> {
+        if format::level(self.pager.read(index)?) == level {
+            Ok(())
+        } else {
+            Err(Error::Corrupt(CorruptKind::LevelMismatch))
+        }
     }
 
     /// Finds `name` (whose key prefix is `prefix`), returning its slot in leaf `path.leaf()`.

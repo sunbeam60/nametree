@@ -59,7 +59,8 @@ pub enum CorruptKind {
     KeyCounter,
     /// A key's prefix does not match the hash of its name.
     KeyHash,
-    /// A key lies outside the range its parent's separators give it.
+    /// A key lies outside the range its parent's separators give it, or a separator's
+    /// collision counter is not 1.
     Separator,
     /// Names sharing a hash prefix are split across two leaves.
     RunSplit,

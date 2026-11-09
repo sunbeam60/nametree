@@ -65,12 +65,9 @@ fn siphash<const C: usize, const D: usize>(k0: u64, k1: u64, msg: &[u8]) -> u64 
         v[0] ^= m;
     };
 
-    let blocks = msg.chunks_exact(8);
-    let tail = blocks.remainder();
+    let (blocks, tail) = msg.as_chunks::<8>();
     for block in blocks {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(block);
-        compress(&mut v, u64::from_le_bytes(word));
+        compress(&mut v, u64::from_le_bytes(*block));
     }
     // Final block: leftover bytes, with the message length (mod 256) in the top byte.
     let mut last = (msg.len() as u64) << 56;
