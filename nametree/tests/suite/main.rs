@@ -1,5 +1,5 @@
 //! Integration tests for nametree, following the testing strategy in
-//! `docs/yak-name-tree-design.md`. One test crate, so shared fixtures compile once.
+//! `docs/design.md`. One test crate, so shared fixtures compile once.
 
 mod common;
 

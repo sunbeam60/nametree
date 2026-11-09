@@ -1,6 +1,6 @@
 # nametree
 
-A standalone Rust library that stores one directory's names as a B+ tree of fixed-size pages inside a generic page store. Yak (`../yak`, currently developed on the `transactions` branch in `../yak-transactions`) is its main consumer, but the library must never depend on or know about Yak.
+A standalone Rust library that stores one directory's names as a B+ tree of fixed-size pages inside a generic page store supplied by a host. Used by Yak https://github.com/sunbeam60/yak. The library must never depend on or know about any particular host; documentation talks about "the host" generically.
 
 ## Human & AI, working together
 Before committing, at all times present & allow edits to the commit message to the user. Do not include "co-authored by Claude" message - human committers own the accountability.
@@ -18,9 +18,9 @@ When a new, larger piece of work is to be undertaken, please create a worktree &
 Code readability and clean architecture matters to humans. Don't violate the architectural constraints for expedience.
 
 ## Design
-Please read the [design](./../docs/yak-name-tree-design.md) for a comprehensive overview of the library: page format, keys, algorithms, cost model and testing strategy. The code must respect it - if it cannot, stop, inform and ask for directions.
+Please read the [design](./../docs/design.md) for a comprehensive overview of the library: page format, keys, algorithms, cost model and testing strategy. The code must respect it - if it cannot, stop, inform and ask for directions.
 
-Do not ever change ./../docs/yak-name-tree-design.md without asking the user and explaining why you wish to change this file, what is wrong with the design and what you propose to change. Keep track of divergences from the design in [differences](./../docs/differences.md).
+Do not ever change ./../docs/design.md without asking the user and explaining why you wish to change this file, what is wrong with the design and what you propose to change. Keep track of divergences from the design in [differences](./../docs/differences.md).
 
 The on-disk format is pinned by golden tests (hasher vectors in `src/hasher.rs`, page images in `tests/suite/format.rs`). Never update their expected values to make a test pass without telling the user that the format changed.
 
@@ -51,7 +51,7 @@ Please finish off big tasks by running `cargo fmt --all` and `cargo clippy --wor
 
 ## Some files are not to be modified
 Do not modify the following files without explicit permission:
-* ./docs/yak-name-tree-design.md
+* ./docs/design.md
 * ./README.md
 
 ## Release

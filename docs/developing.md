@@ -58,9 +58,9 @@ Two kinds of test pin things that must never change silently:
 
 If one of these fails, the on-disk format has changed. Update the expected values only if the change is intended, and record it in `docs/differences.md`.
 
-## Using a local checkout from Yak
+## Using a local checkout from a host crate
 
-While developing both side by side, point Yak at the checkout:
+While developing a host and nametree side by side, point the host at the checkout:
 
 ```toml
 nametree = { path = "../nametree/nametree" }

@@ -81,7 +81,7 @@ pub(crate) const MAX_LEVEL: u32 = 16;
 pub const MAX_NAME_LEN: usize = u8::MAX as usize;
 
 /// Smallest page size accepted for any value type. Small pages are useful in tests to force deep
-/// trees; real hosts should use their atomic write unit (Yak: its block size, at least 4 KiB).
+/// trees; real hosts should use their atomic write unit (typically a block of at least 4 KiB).
 pub const MIN_PAGE_SIZE: usize = 2048;
 
 /// Largest page size: name offsets and `heap_start` are `u32`, and `heap_start` can equal the
@@ -112,7 +112,7 @@ pub(crate) const MAX_COUNTER: u64 = COUNTER_MASK;
 /// Bit 63 of every key is 0, so a key fits a positive signed 64-bit offset.
 const KEY_TOP_BIT: u64 = 1 << 63;
 
-/// Size of a leaf slot for value type `V`: 13 bytes plus the value (22 for Yak).
+/// Size of a leaf slot for value type `V`: 13 bytes plus the value (22 for a 9-byte value).
 pub(crate) const fn leaf_slot_size<V>() -> usize {
     size_of::<LeafSlot<V>>()
 }
@@ -346,10 +346,10 @@ pub(crate) const fn is_valid_key(key: u64) -> bool {
 mod tests {
     use super::*;
 
-    /// Yak's value: a child stream ID and an entry type.
+    /// A directory entry value: a child ID and an entry type.
     #[repr(C)]
     #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
-    struct YakLike {
+    struct DirEntry {
         target: U64,
         kind: u8,
     }
@@ -359,8 +359,8 @@ mod tests {
         assert_eq!(HEADER_SIZE, 20);
         assert_eq!(INNER_SLOT_SIZE, 12);
         assert_eq!(LEAF_SLOT_BASE, 13);
-        assert_eq!(leaf_slot_size::<YakLike>(), 22);
-        assert_eq!(min_page_size::<YakLike>(), MIN_PAGE_SIZE);
+        assert_eq!(leaf_slot_size::<DirEntry>(), 22);
+        assert_eq!(min_page_size::<DirEntry>(), MIN_PAGE_SIZE);
         // A value so large that four maximum entries need more than 2 KiB.
         assert_eq!(
             min_page_size::<[u8; 300]>(),
@@ -399,12 +399,12 @@ mod tests {
     fn validation_rejects_zeroed_and_filled_pages() {
         let zeroed = [0u8; MIN_PAGE_SIZE];
         assert_eq!(
-            validate_page::<YakLike>(&zeroed, 1),
+            validate_page::<DirEntry>(&zeroed, 1),
             Err(CorruptKind::Level)
         );
         let filled = [0xFFu8; MIN_PAGE_SIZE];
         assert_eq!(
-            validate_page::<YakLike>(&filled, 1),
+            validate_page::<DirEntry>(&filled, 1),
             Err(CorruptKind::Level)
         );
     }

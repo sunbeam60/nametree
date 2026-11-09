@@ -1,8 +1,7 @@
 //! A directory's names as a B+ tree of fixed-size pages inside a generic page store.
 //!
-//! Built for [Yak](https://github.com/sunbeam60/yak), which keeps one tree per directory stream,
-//! but the crate knows nothing about Yak. It owns the page format and the tree algorithms; the
-//! host owns atomicity, copy-on-write, store identity and the hasher seed.
+//! The crate owns the page format and the tree algorithms. The host, whatever supplies the
+//! pages, owns atomicity, copy-on-write, store identity and the hasher seed.
 //!
 //! * **Minimal page churn**: most inserts, deletes and renames rewrite exactly one page.
 //! * **Compact**: variable-length names packed into slotted pages, no per-name padding.
@@ -12,8 +11,7 @@
 //!   ([`PageStore`]); [`MemStore`] and [`FileStore`] ship with the crate.
 //! * **Linux-compatible names**: 1 to 255 arbitrary bytes, case-sensitive, byte-exact.
 //!
-//! The full design, including the on-disk format, is in `docs/yak-name-tree-design.md` in the
-//! repository.
+//! The full design, including the on-disk format, is in `docs/design.md` in the repository.
 //!
 //! # Example
 //!
@@ -43,7 +41,8 @@
 //! fails before then writes nothing. A store error *while* writing can leave a half-finished
 //! change, so the host must make each call atomic:
 //!
-//! * **Yak**: wrap each call (and each cross-directory rename pair) in a transaction.
+//! * **A transactional host**: wrap each call (and each cross-directory rename pair) in a
+//!   transaction.
 //! * **[`MemStore`]**: atomic if a call that errors is treated as poisoning the tree.
 //! * **[`FileStore`]**: not crash-safe; for tests and non-durable use only.
 //!

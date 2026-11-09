@@ -1,16 +1,8 @@
-# Differences from yak-name-tree-design.md
+# Differences from design.md
 
 This file tracks where the implementation diverges from, or fills gaps in, the design document. The design document itself is not changed without agreement.
 
 ## Format and algorithms
-
-### Separators are the run's first possible key
-
-The design says a separator is "the first key in `child`". The implementation uses `run_first(prefix)` (prefix | counter 1) of the right page's first key. When the first key's counter is 1, which is almost always, these are identical.
-
-Why: a deleted counter can be reused. If a run's counter-1 name is deleted, the right page's first key becomes `prefix | 2`. A later name in the same run then gets counter 1 and lands below a separator of `prefix | 2`. Lookups still work, because they route by `run_last`, but "separator ≤ every key in its child" would no longer hold, and fsck could not check it. With `prefix | 1` the invariant holds exactly.
-
-`check()` rejects any separator whose counter is not 1. A tree written to the design's literal rule would fail that check, so the design's inner-slot table ("Separator: the first key in `child`") should eventually say "the lowest possible key of the run that starts `child`". That needs agreement before the design document changes.
 
 ### CollisionOverflow also covers a run too large for one page
 
@@ -45,8 +37,8 @@ Name offsets are also added with overflow checks, so a corrupt offset near `u32:
 
 * `Error::PageSize`: the store's page size is below `min_page_size::<V>()` or above `MAX_PAGE_SIZE`. The design lists no error for this.
 * `iter()` (same as `iter_from(0)`) and `iter_filtered(cookie, filter)`, the design's type filter. Name bytes are read only for entries that pass the filter.
-* `is_empty()`: cheap, because an empty tree is a zero-length store. Yak needs it before removing a directory.
-* `check()` and `check_with(value_ok)`: the full fsck. `check_with` takes a value predicate, for rules such as Yak's "type is not 0", since the library knows nothing about the value. The predicate may read from the tree.
+* `is_empty()`: cheap, because an empty tree is a zero-length store. A host needs it before removing a directory.
+* `check()` and `check_with(value_ok)`: the full fsck. `check_with` takes a value predicate, for rules such as "entry type is not 0", since the library knows nothing about the value. The predicate may read from the tree.
 * `store_mut()`, `hasher()`, `page_size()`, `min_page_size::<V>()`, and `impl NameHasher for &H`.
 * `MemStore::from_bytes` / `as_bytes` / `into_bytes`, and `FileStore::new` / `file` / `into_file`.
 * `nametree::zerocopy` re-export, so hosts use the same zerocopy version for their value types.
@@ -65,4 +57,12 @@ Name offsets are also added with overflow checks, so a corrupt offset near `u32:
 
 ## Not done here
 
-* Build step 10's Yak `PageStore` impl and its integration belong in the Yak crate.
+* Host `PageStore` impls and integration (build step 10) belong in each host's own crate.
+
+## Resolved
+
+### Separators are the run's first possible key (design updated 9 Nov 2026)
+
+The design used to say a separator is "the first key in `child`". The implementation has always used that key with its counter set to 1, and the two are identical whenever the first key's counter is 1, which is almost always.
+
+The literal rule broke after counter reuse. If a run's counter-1 name was deleted, the right page's first key became `prefix | 2`, and a later name in the same run got counter 1 and landed below its separator. Lookups still worked, because they route by `run_last`, but "separator ≤ every key in its child" no longer held. `check()` now rejects any separator whose counter is not 1. The design's inner-slot table, routing rules, split and merge steps, fsck list and decision log now all say counter 1.

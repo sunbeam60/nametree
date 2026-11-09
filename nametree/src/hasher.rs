@@ -18,8 +18,9 @@ impl<H: NameHasher + ?Sized> NameHasher for &H {
 
 /// Keyed SipHash-1-3. With a random secret seed, crafting names that collide is infeasible.
 ///
-/// The caller owns the seed. Yak generates a random 128-bit seed when it creates a file, stores
-/// it in its header and builds the hasher from it on every open.
+/// The caller owns the seed. A host typically generates a random 128-bit seed once, when it
+/// creates its container, stores it in its own metadata and builds the hasher from it on every
+/// open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SipHasher13 {
     k0: u64,

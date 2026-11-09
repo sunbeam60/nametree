@@ -4,7 +4,9 @@
 
 A Rust library that stores one directory's names as a B+ tree of fixed-size pages inside a pluggable page store.
 
-It was built for [Yak](https://github.com/sunbeam60/yak), which keeps each directory in its own stream, but the crate knows nothing about Yak. It owns the page format and the tree algorithms. The host owns atomicity, copy-on-write, store identity and the hasher seed.
+The crate owns the page format and the tree algorithms. The host, whatever supplies the pages, owns atomicity, copy-on-write, store identity and the hasher seed.
+
+Used by [Yak](https://github.com/sunbeam60/yak).
 
 * **Minimal page churn**: most inserts, deletes and renames rewrite exactly one page, which matters when the host store is copy-on-write.
 * **Compact**: variable-length names are packed into slotted pages with fixed-size slots and no per-name padding.
@@ -39,11 +41,11 @@ for entry in tree.iter() {
 * Page 0 is always the root. The store stays dense: new pages are appended, and a freed page is filled by moving the last page into it. An empty directory is a zero-length store.
 * Within one call, every modified page is buffered and written once at the end. A call that fails before then writes nothing.
 
-The full design, including the on-disk format, is in [docs/yak-name-tree-design.md](docs/yak-name-tree-design.md). Divergences from it are tracked in [docs/differences.md](docs/differences.md).
+The full design, including the on-disk format, is in [docs/design.md](docs/design.md). Divergences from it are tracked in [docs/differences.md](docs/differences.md).
 
 ## Atomicity
 
-One call can write several pages (a split writes three), and the tree does not journal. The host must make each call atomic. For example, Yak wraps each call in a transaction. `MemStore` is atomic if a call that errors is treated as poisoning the tree. `FileStore` is not crash-safe and is meant for tests and non-durable use.
+One call can write several pages (a split writes three), and the tree does not journal. The host must make each call atomic, for example by wrapping each call in a transaction. `MemStore` is atomic if a call that errors is treated as poisoning the tree. `FileStore` is not crash-safe and is meant for tests and non-durable use.
 
 ## Using it from another crate
 

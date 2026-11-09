@@ -1,23 +1,25 @@
-# Yak Directory Name Tree - Design and Implementation Guide
+<!-- cspell:locale en-GB -->
+
+# Directory Name Tree - Design and Implementation Guide
 
 Bjorn Toft Madsen · started 5 Nov 2026 · updated 9 Nov 2026
 
 ## Overview and goals
 
-A standalone Rust library that stores one directory's names as a B+ tree of fixed-size pages inside a generic page store. Yak uses it with one Yak stream per directory, but the library knows nothing about Yak.
+A standalone Rust library that stores one directory's names as a B+ tree of fixed-size pages inside a generic page store supplied by a host, such as one stream per directory inside a container file. The library knows nothing about the host.
 
 Goals:
 
-- **Minimal page churn** - most inserts, deletes and renames rewrite exactly one page, because the host store (Yak) is copy-on-write.
+- **Minimal page churn** - most inserts, deletes and renames rewrite exactly one page, because the host store may be copy-on-write.
 - **Compact** - variable-length names packed into slotted pages, fixed-size slots, no per-name padding.
 - **Fast lookup and listing** - O(log n) point lookup by name key, ordered leaf walk for readdir with an exactly-once 63-bit cookie.
-- **Pluggable storage** - any store that can read, write and truncate whole pages (in-memory, file, Yak stream).
+- **Pluggable storage** - any store that can read, write and truncate whole pages (in-memory, file, a host's stream).
 - **Linux-compatible names** - case-sensitive, byte-exact, no Unicode normalisation, so Linux trees copy in without collisions.
 
 Design principles:
 
 - The library owns the page format and tree algorithms. The host owns atomicity, copy-on-write, stream identity and the hasher seed.
-- Pages are overwritten in place. The host's COW turns each page write into one Yak block copy, so the tree does no COW of its own.
+- Pages are overwritten in place. The host's COW turns each page write into one block copy, so the tree does no COW of its own.
 - Every structural choice is judged by pages written per operation, not bytes moved.
 
 ## Storage model and keys
@@ -26,21 +28,21 @@ One directory is one page store - a sequence of pages of size B, with page N at 
 
 **Stream rules**
 
-- B comes from the store, not the format. The library accepts any B of at least 2 KiB (room for four maximum-size entries), up to the u32 offset limit; small pages are useful in tests to force deep trees. **For atomicity, B should equal the host's atomic write unit** - for Yak, its block size, which is at least 4 KiB (smaller risks torn writes).
-- Yak data streams start exactly on a block boundary, so one page = one Yak block.
+- B comes from the store, not the format. The library accepts any B of at least 2 KiB (room for four maximum-size entries), up to the u32 offset limit; small pages are useful in tests to force deep trees. **For atomicity, B should equal the host's atomic write unit** - typically its block size, at least 4 KiB (smaller risks torn writes).
+- If the host's streams start exactly on a block boundary, one page = one host block.
 - Page 0 is always the root. A zero-length stream is a valid empty directory: page 0 exists only while the directory holds at least one name, so an empty directory costs no blocks.
 - The stream is always dense: its length is exactly pages in use × B. There is no free list - freed pages are filled by moving the last page (see Structure changes).
 - All integers are little-endian, accessed through zerocopy's unaligned types (no alignment requirements anywhere).
 
 **Keys**
 
-Each name's **key** is a u64 built from a caller-supplied `NameHasher` (keyed SipHash-1-3 with a random per-file seed) over the raw name bytes:
+Each name's **key** is a u64 built from a caller-supplied `NameHasher` (keyed SipHash-1-3 with a random seed owned by the host) over the raw name bytes:
 
-| Bits | Contents |
-| --- | --- |
-| 63 | Always 0, so a key fits a positive signed 64-bit offset |
-| 62 to 4 | Top 59 bits of the name hash (the prefix) |
-| 3 to 0 | Collision counter, 1 to 15 |
+| Bits    | Contents                                                |
+| ------- | ------------------------------------------------------- |
+| 63      | Always 0, so a key fits a positive signed 64-bit offset |
+| 62 to 4 | Top 59 bits of the name hash (the prefix)               |
+| 3 to 0  | Collision counter, 1 to 15                              |
 
 - Keys are unique within a directory, and sort order is the key alone.
 - Names sharing a 59-bit prefix form a **run** and get distinct counters (the lowest unused, almost always 1). A 16th name in one run fails with `CollisionOverflow` - about 10⁻¹⁸⁴ for a million-entry directory, so in practice only a broken hasher hits it.
@@ -57,13 +59,13 @@ Each name's **key** is a u64 built from a caller-supplied `NameHasher` (keyed Si
 
 Every page starts with the same 20-byte header of five u32 fields.
 
-| Offset | Size | Field | Meaning |
-| --- | --- | --- | --- |
-| 0 | 4 | link | Leaf: next leaf page, 0 = none. Inner: leftmost child page |
-| 4 | 4 | slot_count | Number of slots in the page |
-| 8 | 4 | heap_start | Leaf only: lowest name offset (B when empty) |
-| 12 | 4 | frag_bytes | Leaf only: bytes lost to deleted names |
-| 16 | 4 | level | 1 leaf, 2 to 16 inner; anything else invalid |
+| Offset | Size | Field      | Meaning                                                    |
+| ------ | ---- | ---------- | ---------------------------------------------------------- |
+| 0      | 4    | link       | Leaf: next leaf page, 0 = none. Inner: leftmost child page |
+| 4      | 4    | slot_count | Number of slots in the page                                |
+| 8      | 4    | heap_start | Leaf only: lowest name offset (B when empty)               |
+| 12     | 4    | frag_bytes | Leaf only: bytes lost to deleted names                     |
+| 16     | 4    | level      | 1 leaf, 2 to 16 inner; anything else invalid               |
 
 Notes:
 
@@ -90,42 +92,42 @@ A leaf is a slotted page: header at offset 0, a sorted array of fixed-size slots
 
 Each slot holds the key, the name's offset and length, and the value. A lookup binary searches the slots and reads name bytes only to confirm a match.
 
-**Leaf slot (22 bytes for Yak)** - kept sorted by key:
+**Leaf slot (22 bytes with the example value)** - kept sorted by key:
 
-| Offset | Size | Field | Meaning |
-| --- | --- | --- | --- |
-| 0 | 8 | key | 59-bit hash prefix + 4-bit collision counter |
-| 8 | 4 | offset | Name position within the page |
-| 12 | 1 | name_len | 1 to 255 |
-| 13 | 8 | target | Value: stream ID of the child (Yak's V) |
-| 21 | 1 | type | Value: 0 invalid, 1 file, 2 dir, 3 symlink (Yak's V) |
+| Offset | Size | Field    | Meaning                                            |
+| ------ | ---- | -------- | -------------------------------------------------- |
+| 0      | 8    | key      | 59-bit hash prefix + 4-bit collision counter       |
+| 8      | 4    | offset   | Name position within the page                      |
+| 12     | 1    | name_len | 1 to 255                                           |
+| 13     | 8    | target   | Example value: ID of the child                     |
+| 21     | 1    | type     | Example value: 0 invalid, 1 file, 2 dir, 3 symlink |
 
 **Name heap** - raw name bytes only, in no particular order. Each name's position and length come from its slot.
 
-In the generic library, byte 12 is `name_len` and bytes 13 onward hold an opaque fixed-size value `V`, so a leaf slot is `13 + size_of::<V>()` bytes. `target` and `type` are Yak's choice of V.
+Byte 12 is `name_len` and bytes 13 onward hold an opaque fixed-size value `V`, so a leaf slot is `13 + size_of::<V>()` bytes. The table shows the example V used throughout this document: a directory entry holding the child's ID (`target`) and an entry type (`type`).
 
 Keeping the value and name length in the slot costs no extra space (the same bytes moved out of the entry) and keeps the common checks in the slot array: a run member with a different `name_len` is rejected without reading its name, a type filter (for example, directories only) reads names only for matches, value updates never touch the heap, and delete and compaction never read it.
 
 **Derived quantities**
 
 - Name size = `name_len`, read from the slot.
-- Slot size S = `13 + size_of::<V>()` (22 for Yak).
+- Slot size S = `13 + size_of::<V>()` (22 for the example value).
 - Free space = `heap_start - (20 + S × slot_count)`.
 - Reclaimable space = free space + `frag_bytes`.
 - A leaf is never empty on disk: removing the last name truncates the stream to zero length. (A leaf being built in memory starts at `slot_count = 0`, `heap_start = B`, `frag_bytes = 0`.)
 
 **Worked example** - B = 4096, names inserted in the order docs, a.txt, notes.md (keys illustrative, each with counter 1):
 
-| Region | Offset | Contents |
-| --- | --- | --- |
-| Header | 0 | link 0, slot_count 3, heap_start 4079, frag_bytes 0, level 1 |
-| Slot 0 | 20 | key 0x0D15…1, offset 4087, len 5, target 42, file → a.txt |
-| Slot 1 | 42 | key 0x2D18…1, offset 4092, len 4, target 7, dir → docs |
-| Slot 2 | 64 | key 0x4E03…1, offset 4079, len 8, target 43, file → notes.md |
-| Free | 86 to 4078 | 3,993 bytes |
-| Name | 4079 | notes.md |
-| Name | 4087 | a.txt |
-| Name | 4092 | docs |
+| Region | Offset     | Contents                                                     |
+| ------ | ---------- | ------------------------------------------------------------ |
+| Header | 0          | link 0, slot_count 3, heap_start 4079, frag_bytes 0, level 1 |
+| Slot 0 | 20         | key 0x0D15…1, offset 4087, len 5, target 42, file → a.txt    |
+| Slot 1 | 42         | key 0x2D18…1, offset 4092, len 4, target 7, dir → docs       |
+| Slot 2 | 64         | key 0x4E03…1, offset 4079, len 8, target 43, file → notes.md |
+| Free   | 86 to 4078 | 3,993 bytes                                                  |
+| Name   | 4079       | notes.md                                                     |
+| Name   | 4087       | a.txt                                                        |
+| Name   | 4092       | docs                                                         |
 
 Slots are in key order; names are in insertion order from the end backwards. The two never need to line up.
 
@@ -135,10 +137,10 @@ An inner page is the header plus a sorted array of (separator, child) slots from
 
 **Inner slot (12 bytes)**
 
-| Offset | Size | Field | Meaning |
-| --- | --- | --- | --- |
-| 0 | 8 | key | Separator: the first key in `child` |
-| 8 | 4 | child | Page number of the child |
+| Offset | Size | Field | Meaning                                                                       |
+| ------ | ---- | ----- | ----------------------------------------------------------------------------- |
+| 0      | 8    | key   | Separator: the lowest possible key of the run that starts `child` (counter 1) |
+| 8      | 4    | child | Page number of the child                                                      |
 
 **Routing rules**
 
@@ -146,15 +148,16 @@ An inner page is the header plus a sorted array of (separator, child) slots from
 - Otherwise take the largest separator ≤ the key; its `child` covers keys up to the next separator.
 - Children = `slot_count + 1`.
 - Keys are unique, so separators are plain keys with no tie-breaking.
+- Every separator has counter 1 (`run_first`: prefix + 1), never a higher counter copied from a live key. A deleted counter can be reused, so a run's lowest key can drop back to counter 1 later; a separator at counter 1 stays ≤ every key in its child regardless.
 - A child's `level` must equal the parent's `level - 1`.
 
 **Worked example** - the directory above after its root split (about 140 names):
 
-| Page | level | link | Slots | Covers |
-| --- | --- | --- | --- | --- |
-| 0 (root) | 2 | 1 | 1: (0x4009…1, child 2) | everything |
-| 1 | 1 | 2 | ~70 | 0x0000… to 0x3FF2… |
-| 2 | 1 | 0 | ~71 | 0x4009… to 0x7FFF… |
+| Page     | level | link | Slots                  | Covers             |
+| -------- | ----- | ---- | ---------------------- | ------------------ |
+| 0 (root) | 2     | 1    | 1: (0x4009…1, child 2) | everything         |
+| 1        | 1     | 2    | ~70                    | 0x0000… to 0x3FF2… |
+| 2        | 1     | 0    | ~71                    | 0x4009… to 0x7FFF… |
 
 Looking up docs (0x2D18…) finds no separator ≤ its run's highest possible key, so it follows `link` to page 1. notes.md (0x4E03…) routes via 0x4009…1 to page 2.
 
@@ -163,11 +166,11 @@ Looking up docs (0x2D18…) finds no separator ≤ its run's highest possible ke
 At B = 4 KiB a directory of 36,000 names is two levels deep and 12 million names is three. Figures assume 16-byte names (38 bytes per leaf name including its slot).
 
 | Page size B | Names per leaf | Children per inner | Height 2 | Height 3 |
-| --- | --- | --- | --- | --- |
-| 4 KiB | 107 | 339 | 36 K | 12 M |
-| 8 KiB | 215 | 681 | 146 K | 100 M |
-| 16 KiB | 430 | 1,363 | 586 K | 800 M |
-| 64 KiB | 1,724 | 5,459 | 9.4 M | 51 B |
+| ----------- | -------------- | ------------------ | -------- | -------- |
+| 4 KiB       | 107            | 339                | 36 K     | 12 M     |
+| 8 KiB       | 215            | 681                | 146 K    | 100 M    |
+| 16 KiB      | 430            | 1,363              | 586 K    | 800 M    |
+| 64 KiB      | 1,724          | 5,459              | 9.4 M    | 51 B     |
 
 Formulas: names per leaf = (B − 20) / (13 + size_of V + name_len); children per inner = (B − 20) / 12. Height 1 is a single leaf. Bigger B means a shallower tree but every insert rewrites a bigger page; 4 to 16 KiB is the sweet spot for directories.
 
@@ -190,7 +193,7 @@ pub trait PageStore {
 }
 ```
 
-Shipped implementations: `MemStore` (a `Vec<u8>`) and `FileStore` (positioned reads and writes plus `set_len`). Yak implements `PageStore` for its stream handle inside the Yak crate.
+Shipped implementations: `MemStore` (a `Vec<u8>`) and `FileStore` (positioned reads and writes plus `set_len`). A host implements `PageStore` for its own storage (for example, a stream handle) in its own crate.
 
 **Hasher**
 
@@ -200,7 +203,7 @@ pub trait NameHasher {
 }
 ```
 
-The caller owns the seed. Yak generates a random 128-bit seed when it creates a file, stores it in the L4 header, and builds the hasher from it on every open (a directory stream has no metadata of its own). Pin the hasher implementation and keep golden test vectors: every stored key depends on its output never changing.
+The caller owns the seed. A host typically generates a random 128-bit seed once, when it creates its container, stores it in its own metadata, and builds the hasher from it on every open (the tree's store holds no metadata of its own). Pin the hasher implementation and keep golden test vectors: every stored key depends on its output never changing.
 
 **Tree**
 
@@ -263,17 +266,17 @@ struct LeafSlot<V> {
     key: U64,
     offset: U32,  // name position in the page
     name_len: u8, // 1..=255
-    value: V,     // Yak: YakEntry (9 bytes)
+    value: V,     // e.g. DirEntry (9 bytes)
 }
 
 #[repr(C)]
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 struct InnerSlot { key: U64, child: U32 }
 
-// Yak's value type
+// The example value type used in this document
 #[repr(C)]
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
-pub struct YakEntry { target: U64, kind: u8 }
+pub struct DirEntry { target: U64, kind: u8 }
 
 const fn prefix(hash: u64) -> u64 { (hash >> 5) << 4 }   // bits 62..4
 const fn run_first(hash: u64) -> u64 { prefix(hash) | 1 }
@@ -331,7 +334,7 @@ Rewrite all names contiguously from B downward in slot order, update each slot's
 1. Pick the split point at the middle by bytes; move it left or right to the nearest boundary between different 59-bit prefixes (collision rule).
 2. Append a new page R; move the upper slots and their names into it (compacted).
 3. R.link = L.link; L.link = R. Compact L.
-4. Insert (R's first key, R) into the parent; if the parent is full, split it.
+4. Insert (R's first key with its counter set to 1, R) into the parent; if the parent is full, split it.
 
 Pages written: L, R, parent.
 
@@ -345,14 +348,14 @@ Pages written: L, R, parent.
 
 1. Append a new page C and copy page 0 into it.
 2. Split C as a leaf or inner page, producing C and its new sibling S.
-3. Rewrite page 0 as an inner page at C.level + 1 with link = C and one slot (S's first key, S).
+3. Rewrite page 0 as an inner page at C.level + 1 with link = C and one slot (the separator from step 2, S).
 
 The root never moves, so nothing records its location.
 
 **Merge** (page below about 25% used, not the root)
 
 1. Fold the page into its left sibling if they fit together; otherwise borrow slots from it to rebalance. No left sibling (leftmost child) → use the right sibling instead.
-2. Remove the separator from the parent; for leaves fix the survivor's `link`.
+2. After a fold, remove the separator from the parent and, for leaves, fix the survivor's `link`. After borrowing, reset the separator: for leaves to the right page's new first key with its counter set to 1, for inner pages to the key rotated up through the parent.
 3. The emptied page is freed (stream compaction below). If the parent now underflows, merge upward.
 
 **Root collapse**
@@ -370,21 +373,21 @@ When page 0 is an inner page with `slot_count = 0`, copy its only child (page `l
 
 The common case - an insert, delete or same-page rename - writes exactly one page.
 
-| Operation | Pages written | How often |
-| --- | --- | --- |
-| Insert, delete, same-page rename, page compaction | 1 | Almost every operation |
-| Leaf split | 3 (L, R, parent) | About 1 in 50 inserts at 4 KiB |
-| Root split | 3 (page 0, C, S) | Once per new tree level |
-| Merge with stream compaction | 3 to 4 | Rare (lazy 25% threshold) |
-| Cascading split or merge | +2 per extra level | Very rare |
+| Operation                                         | Pages written      | How often                      |
+| ------------------------------------------------- | ------------------ | ------------------------------ |
+| Insert, delete, same-page rename, page compaction | 1                  | Almost every operation         |
+| Leaf split                                        | 3 (L, R, parent)   | About 1 in 50 inserts at 4 KiB |
+| Root split                                        | 3 (page 0, C, S)   | Once per new tree level        |
+| Merge with stream compaction                      | 3 to 4             | Rare (lazy 25% threshold)      |
+| Cascading split or merge                          | +2 per extra level | Very rare                      |
 
-The directory's version is the host stream's version, so the tree tracks none. Page counts are the tree's view: each page write also costs Yak its own block-map update and commit.
+The directory's version is the host stream's version, so the tree tracks none. Page counts are the tree's view: each page write may also cost the host its own bookkeeping (for a copy-on-write host, a block-map update and commit).
 
-**Write buffering** - within one public call, each page the library modifies is held in a working buffer and written once when the call finishes (compaction and rename touch some pages twice). There is no read cache: the store is expected to provide one (Yak keeps blocks in a write-through memory cache).
+**Write buffering** - within one public call, each page the library modifies is held in a working buffer and written once when the call finishes (compaction and rename touch some pages twice). There is no read cache: the store is expected to provide one (for example, a write-through block cache).
 
 **Atomicity contract** - one call can write several pages and the library does not journal. The caller must make each call atomic:
 
-- **Yak** - wrap each call (and each cross-directory rename pair) in a Yak transaction.
+- **Transactional host** - wrap each call (and each cross-directory rename pair) in a host transaction.
 - **MemStore** - atomic by construction if a call that errors is treated as poisoning the tree.
 - **FileStore** - not crash-safe across multi-page calls; documented as for tests and non-durable use only.
 
@@ -405,12 +408,12 @@ Corruption is returned as `Error::Corrupt`, never a panic. These checks come fre
 **Debug builds and fsck**
 
 - Keys strictly increasing within each page.
-- Inner separators bracket their children's first and last keys.
+- Inner separators bracket their children's keys (every key in a child is ≥ its separator and < the next), and every separator has counter 1.
 - Names do not overlap; `frag_bytes` equals the heap bytes not covered by live names.
 - The leaf `link` chain visits every leaf exactly once, in key order, ending in 0.
 - The stream holds no unreachable pages.
 - Each key's prefix equals the top 59 bits of `hasher.hash(name)`, its counter is 1 to 15, and no run spans two leaves.
-- Yak's value: `type` is not 0.
+- Value checks supplied by the host (with the example value: `type` is not 0).
 
 ## Implementation plan
 
@@ -418,17 +421,17 @@ Build bottom-up, so each layer is tested before the next depends on it. Dependen
 
 **Module layout**
 
-| Module | Contents |
-| --- | --- |
-| `store` | `PageStore` trait, `MemStore`, `FileStore` (feature `std`) |
-| `format` | `Header`, `LeafSlot`, `InnerSlot`, constants, level values, page validation |
-| `leaf` | Slotted-page ops on a `&mut [u8]`: search, insert, remove, compact, split, merge |
-| `inner` | Separator search, insert, remove, split, merge on a `&mut [u8]` |
-| `pager` | Thin layer over a `PageStore`: working buffers for pages modified in the current call (each written once), append, move-last, truncate. No read cache - the store provides one |
-| `tree` | `NameTree`: descent with path stack, the public API, split and merge propagation, root split and collapse |
-| `iter` | Leaf-chain iterator and `iter_from(cookie)` |
-| `check` | Full-tree fsck used by tests and debug builds |
-| `error` | `Error<E>`, `CorruptKind` |
+| Module   | Contents                                                                                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `store`  | `PageStore` trait, `MemStore`, `FileStore` (feature `std`)                                                                                                                     |
+| `format` | `Header`, `LeafSlot`, `InnerSlot`, constants, level values, page validation                                                                                                    |
+| `leaf`   | Slotted-page ops on a `&mut [u8]`: search, insert, remove, compact, split, merge                                                                                               |
+| `inner`  | Separator search, insert, remove, split, merge on a `&mut [u8]`                                                                                                                |
+| `pager`  | Thin layer over a `PageStore`: working buffers for pages modified in the current call (each written once), append, move-last, truncate. No read cache - the store provides one |
+| `tree`   | `NameTree`: descent with path stack, the public API, split and merge propagation, root split and collapse                                                                      |
+| `iter`   | Leaf-chain iterator and `iter_from(cookie)`                                                                                                                                    |
+| `check`  | Full-tree fsck used by tests and debug builds                                                                                                                                  |
+| `error`  | `Error<E>`, `CorruptKind`                                                                                                                                                      |
 
 **Build order**
 
@@ -441,7 +444,7 @@ Build bottom-up, so each layer is tested before the next depends on it. Dependen
 7. Merge, root collapse and stream compaction.
 8. `iter` and cookies.
 9. `check` (fsck), wired into every test.
-10. `FileStore`, then Yak's `PageStore` impl and integration in the Yak crate.
+10. `FileStore`. Hosts implement `PageStore` and integrate the tree in their own crates.
 
 **Implementation notes**
 
@@ -465,38 +468,39 @@ The core test is a model check: random operation sequences run against both `Nam
 
 ## Decision log
 
-| Decision | Choice | Why |
-| --- | --- | --- |
-| Directory structure | One B+ tree per directory stream | Matches Yak's directory-is-a-stream model; version comes free |
-| Rejected: fst | Not used | Immutable once built; directories change constantly |
-| Rejected: size-class streams | Not used | Several structures dirtied per change; readdir spans every stream |
-| Rejected: global tree (btrfs style) | Not used | Yak already has a stream per directory, and Yak transactions already span streams |
-| Tree COW | None; overwrite in place | Yak's COW copies the block; no path copying needed |
-| Read cache | None in the library | Yak keeps blocks in a write-through memory cache |
-| Page size | One Yak block, B ≥ 4 KiB in Yak; the library accepts 2 KiB and up | Avoids torn writes; one page = one Yak block copy |
-| Key | 63-bit key: 59-bit hash prefix + 4-bit collision counter | Unique keys: fixed-size slots, and the key doubles as an exactly-once readdir cookie that fits a positive off_t |
-| Hasher | Keyed SipHash-1-3, random per-file seed | Crafted collisions infeasible without the seed. The 128-bit seed is generated randomly when the Yak file is created, stored in the L4 header and never changed |
-| Collision overflow | Insert fails with `CollisionOverflow` | Needs 16 names sharing a 59-bit prefix: about 10⁻¹⁸⁴ for a million-entry directory; only buggy or test hashers hit it |
-| Key in slot | Full key in the slot, none in the entry | Smaller than splitting it; search rarely touches the heap |
-| Leaf slot contents | Key, offset, `name_len` and value in the slot; the heap holds only names | Same space as before; early rejection on collisions, type filtering, value updates, delete and compaction all work from the slot array alone |
-| Inner entries | None; child in the slot | 12-byte (key, child) slots, 339 children at 4 KiB |
-| Inner tie names | Never; collision rule | Keys are unique, so separators are plain keys |
-| Header | 20 bytes, five u32 | Supports pages above 32 KiB; all fields aligned |
-| Magic, version, kind, flags | Dropped | `level` covers type; host format version covers versioning |
-| Checksum | Dropped | Yak checksums blocks |
-| Freed-page marker | Dropped | A stale pointer to a truncated page fails the `page_count` bounds check |
-| frag_bytes | Kept | Fixed cost to maintain; avoids a scan |
-| Leaf sibling links | Next-leaf only | Safe without tree COW; split and merge touch no extra page |
-| Free space | Dense stream, move last page; an empty directory is a zero-length stream | No free list, no leaked pages; empty directories cost no blocks |
-| Names | Case-sensitive, byte-exact, no normalisation | Linux trees copy in without collisions |
-| Storage | Generic `PageStore` trait | Library is independent of Yak |
-| Endianness and access | Little-endian, zerocopy unaligned types | No alignment rules; portable format |
+| Decision                            | Choice                                                                         | Why                                                                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Directory structure                 | One B+ tree per directory, in its own page store                               | Each directory changes independently; a host that keeps a stream per directory gets the directory's version for free                                    |
+| Rejected: fst                       | Not used                                                                       | Immutable once built; directories change constantly                                                                                                     |
+| Rejected: size-class streams        | Not used                                                                       | Several structures dirtied per change; readdir spans every stream                                                                                       |
+| Rejected: global tree (btrfs style) | Not used                                                                       | Per-directory stores keep trees small and independent; host transactions can span several stores                                                        |
+| Tree COW                            | None; overwrite in place                                                       | A copy-on-write host copies the block; no path copying needed                                                                                           |
+| Read cache                          | None in the library                                                            | The host's store is expected to cache blocks                                                                                                            |
+| Page size                           | The host's atomic write unit (4 KiB or more); the library accepts 2 KiB and up | Avoids torn writes; one page = one host block copy                                                                                                      |
+| Key                                 | 63-bit key: 59-bit hash prefix + 4-bit collision counter                       | Unique keys: fixed-size slots, and the key doubles as an exactly-once readdir cookie that fits a positive off_t                                         |
+| Hasher                              | Keyed SipHash-1-3, random seed owned by the host                               | Crafted collisions infeasible without the seed. The host generates the 128-bit seed randomly once, stores it with its own metadata and never changes it |
+| Collision overflow                  | Insert fails with `CollisionOverflow`                                          | Needs 16 names sharing a 59-bit prefix: about 10⁻¹⁸⁴ for a million-entry directory; only buggy or test hashers hit it                                   |
+| Key in slot                         | Full key in the slot, none in the entry                                        | Smaller than splitting it; search rarely touches the heap                                                                                               |
+| Leaf slot contents                  | Key, offset, `name_len` and value in the slot; the heap holds only names       | Same space as before; early rejection on collisions, type filtering, value updates, delete and compaction all work from the slot array alone            |
+| Inner entries                       | None; child in the slot                                                        | 12-byte (key, child) slots, 339 children at 4 KiB                                                                                                       |
+| Inner tie names                     | Never; collision rule                                                          | Keys are unique, so separators are plain keys                                                                                                           |
+| Separator key                       | Right page's first key with its counter set to 1                               | A reused counter can sort below a literal first key; counter 1 keeps every separator ≤ all keys in its child                                            |
+| Header                              | 20 bytes, five u32                                                             | Supports pages above 32 KiB; all fields aligned                                                                                                         |
+| Magic, version, kind, flags         | Dropped                                                                        | `level` covers type; host format version covers versioning                                                                                              |
+| Checksum                            | Dropped                                                                        | The host checksums blocks                                                                                                                               |
+| Freed-page marker                   | Dropped                                                                        | A stale pointer to a truncated page fails the `page_count` bounds check                                                                                 |
+| frag_bytes                          | Kept                                                                           | Fixed cost to maintain; avoids a scan                                                                                                                   |
+| Leaf sibling links                  | Next-leaf only                                                                 | Safe without tree COW; split and merge touch no extra page                                                                                              |
+| Free space                          | Dense stream, move last page; an empty directory is a zero-length stream       | No free list, no leaked pages; empty directories cost no blocks                                                                                         |
+| Names                               | Case-sensitive, byte-exact, no normalisation                                   | Linux trees copy in without collisions                                                                                                                  |
+| Storage                             | Generic `PageStore` trait                                                      | Library is independent of any host                                                                                                                      |
+| Endianness and access               | Little-endian, zerocopy unaligned types                                        | No alignment rules; portable format                                                                                                                     |
 
 **Resolved questions**
 
-- Cross-file copies: directory streams will never be copied byte-for-byte between Yak files, so a per-file seed is fine.
+- Copies between containers: a store is only valid under the seed it was built with, so a host must not copy one byte-for-byte into a container with a different seed. Rebuild it instead (iterate the old tree, insert into a new one); a per-container seed is fine.
 - Merge threshold: 25% of B for now; revisit only if profiling says otherwise.
-- Small pages: the library accepts B below 4 KiB (useful in tests); production use should set B to the host's atomic write unit (Yak's block size).
+- Small pages: the library accepts B below 4 KiB (useful in tests); production use should set B to the host's atomic write unit.
 - Readdir cookies: each key carries a 4-bit collision counter, so keys are unique and the key itself is an exactly-once cookie. This replaced a (hash, name) key, under which two names sharing a hash could be skipped or repeated on resume.
 
 **Out of scope for now**

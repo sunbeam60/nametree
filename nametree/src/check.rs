@@ -38,7 +38,7 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
     }
 
     /// Like [`check`](Self::check), and also rejects any stored value for which `value_ok`
-    /// returns `false` (Yak, for example, rejects an entry type of 0). `value_ok` may read from
+    /// returns `false` (for example, a directory host might reject an entry type of 0). `value_ok` may read from
     /// the tree.
     pub fn check_with(
         &self,

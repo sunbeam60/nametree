@@ -1,4 +1,4 @@
-//! Shared test fixtures: a Yak-like value type, test hashers, instrumented stores and the
+//! Shared test fixtures: a directory-entry value type, test hashers, instrumented stores and the
 //! model comparison every test runs after each step.
 
 use std::cell::Cell;
@@ -10,11 +10,11 @@ use nametree::{
 use zerocopy::byteorder::little_endian::U64;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-/// Entry type values, as Yak uses them.
+/// Entry type values for the test directory entries.
 pub const FILE: u8 = 1;
 pub const DIR: u8 = 2;
 
-/// Yak's value: the child's stream ID and its entry type (9 bytes, so slots are 22 bytes).
+/// A directory entry: the child's ID and its entry type (9 bytes, so slots are 22 bytes).
 #[repr(C)]
 #[derive(
     FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Clone, Copy, Debug, PartialEq, Eq,
