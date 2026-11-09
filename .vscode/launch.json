@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug: Rust unit tests (nametree)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/deps/nametree-*.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo-test-build",
+            "sourceFileMap": {
+                "/rustc/*": "${env:USERPROFILE}/.rustup/toolchains/*/lib/rustlib/src/rust"
+            }
+        },
+        {
+            "name": "Debug: Rust integration tests (suite)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/deps/suite-*.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo-test-build",
+            "sourceFileMap": {
+                "/rustc/*": "${env:USERPROFILE}/.rustup/toolchains/*/lib/rustlib/src/rust"
+            }
+        }
+    ]
+}

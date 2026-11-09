@@ -1,0 +1,22 @@
+# Rust
+/target/
+
+# IDE
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# Local settings (keep shared configs in repo)
+.vscode/settings.local.json
+.claude/settings.local.json
+
+# Temp/test directories
+/temp/
+
+# Profiling output
+profile.json.gz
+
+# Claude Code worktrees
+.claude/worktrees/

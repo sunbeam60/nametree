@@ -1,0 +1,30 @@
+{
+    // Rust settings
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.check.command": "clippy",
+    "rust-analyzer.cargo.allTargets": true,
+    // File exclusions (keep workspace clean)
+    "files.exclude": {
+        "**/target/debug/deps": true,
+        "**/target/debug/build": true,
+        "**/target/debug/incremental": true
+    },
+    // Search exclusions
+    "search.exclude": {
+        "**/target": true
+    },
+    // Editor settings
+    "editor.formatOnSave": true,
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        "editor.formatOnSave": true
+    },
+    "cSpell.words": [
+        "fsck",
+        "nametree",
+        "proptest",
+        "readdir",
+        "siphash",
+        "zerocopy"
+    ]
+}

@@ -1,0 +1,283 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo-build",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--workspace"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-build-no-std",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--package",
+                "nametree",
+                "--no-default-features"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-test-build",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--no-run",
+                "--package",
+                "nametree"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-test",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--workspace"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-test-release",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--workspace",
+                "--release"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-test-soak",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--release",
+                "--test",
+                "suite",
+                "model"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin",
+                    "PROPTEST_CASES": "1000"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-fmt-check",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "fmt",
+                "--all",
+                "--",
+                "--check"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-clippy",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-ci-check",
+            "dependsOn": [
+                "cargo-fmt-check",
+                "cargo-clippy",
+                "cargo-build-no-std"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "rebuild-and-test",
+            "dependsOn": [
+                "cargo-ci-check",
+                "cargo-test"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-doc",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "doc",
+                "--package",
+                "nametree",
+                "--no-deps",
+                "--open"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "cargo-clean",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "clean"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH};${env:USERPROFILE}/.cargo/bin"
+                }
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        }
+    ]
+}
