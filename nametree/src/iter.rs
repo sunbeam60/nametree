@@ -161,3 +161,17 @@ impl<S: PageStore, H: NameHasher, V: Value, F: FnMut(&V) -> bool> FusedIterator
     for Iter<'_, S, H, V, F>
 {
 }
+
+impl<S, H, V, F> Drop for Iter<'_, S, H, V, F> {
+    /// Hands the leaf buffer back to the tree's workspace, so later calls and listings reuse it.
+    fn drop(&mut self) {
+        // An iterator that never started holds no buffer. If the workspace is busy, which no
+        // current caller allows, the buffer is simply freed.
+        if self.leaf.is_empty() {
+            return;
+        }
+        if let Ok(mut workspace) = self.tree.workspace.try_borrow_mut() {
+            workspace.give_buf(core::mem::take(&mut self.leaf));
+        }
+    }
+}
