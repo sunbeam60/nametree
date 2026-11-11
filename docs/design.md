@@ -421,24 +421,24 @@ Build bottom-up, so each layer is tested before the next depends on it. Dependen
 
 **Module layout**
 
-| Module   | Contents                                                                                                                                                                       |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `store`  | `PageStore` trait, `MemStore`, `FileStore` (feature `std`)                                                                                                                     |
-| `format` | `Header`, `LeafSlot`, `InnerSlot`, constants, level values, page validation                                                                                                    |
-| `leaf`   | Slotted-page ops on a `&mut [u8]`: search, insert, remove, compact, split, merge                                                                                               |
-| `inner`  | Separator search, insert, remove, split, merge on a `&mut [u8]`                                                                                                                |
-| `pager`  | Thin layer over a `PageStore`: working buffers for pages modified in the current call (each written once), append, move-last, truncate. No read cache - the store provides one |
-| `tree`   | `NameTree`: descent with path stack, the public API, split and merge propagation, root split and collapse                                                                      |
-| `iter`   | Leaf-chain iterator and `iter_from(cookie)`                                                                                                                                    |
-| `check`  | Full-tree fsck used by tests and debug builds                                                                                                                                  |
-| `error`  | `Error<E>`, `CorruptKind`                                                                                                                                                      |
+| Module           | Contents                                                                                                                                                                                             |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store`          | `PageStore` trait, `MemStore`, `FileStore` (feature `std`)                                                                                                                                           |
+| `format`         | `Header`, `LeafSlot`, `InnerSlot`, constants, level values, page validation                                                                                                                          |
+| `leaf`           | Slotted-page ops on a `&mut [u8]`: search, insert, remove, compact, split, merge                                                                                                                     |
+| `inner`          | Separator search, insert, remove, split, merge on a `&mut [u8]`                                                                                                                                      |
+| `page_workspace` | The page workspace, a thin layer over a `PageStore`: working buffers for pages modified in the current call (each written once), append, move-last, truncate. No read cache - the store provides one |
+| `tree`           | `NameTree`: descent with path stack, the public API, split and merge propagation, root split and collapse                                                                                            |
+| `iter`           | Leaf-chain iterator and `iter_from(cookie)`                                                                                                                                                          |
+| `check`          | Full-tree fsck used by tests and debug builds                                                                                                                                                        |
+| `error`          | `Error<E>`, `CorruptKind`                                                                                                                                                                            |
 
 **Build order**
 
 1. `format` and `store` with `MemStore`, plus unit tests that round-trip headers and slots.
 2. `leaf` as pure functions on a page buffer - no I/O. Test insert, remove, compact and split against a sorted `Vec` model.
 3. `inner` the same way.
-4. `pager` with working page buffers and the move-last-page primitive (no read cache).
+4. `page_workspace` with working page buffers and the move-last-page primitive (no read cache).
 5. `tree`: open (including the zero-length empty case), get, insert, remove.
 6. Leaf split and root split; then inner split and cascades.
 7. Merge, root collapse and stream compaction.

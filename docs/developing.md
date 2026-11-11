@@ -14,18 +14,18 @@
 
 Library modules, bottom-up:
 
-| Module    | Contents                                                                          |
-| --------- | --------------------------------------------------------------------------------- |
-| `format`  | Header and slot layouts, key layout, constants, per-page validation               |
-| `store`   | `PageStore` trait, `MemStore`, `FileStore` (feature `std`)                        |
-| `hasher`  | `NameHasher` trait and the pinned SipHash-1-3                                     |
-| `leaf`    | Slotted leaf page operations on a byte buffer (no I/O)                            |
-| `inner`   | Inner page operations on a byte buffer (no I/O)                                   |
-| `pager`   | Per-call working set: buffered writes, append, move-last, truncate                |
-| `tree`    | `NameTree`, descent, insert/split (`tree/insert.rs`), remove/merge (`tree/remove.rs`) |
-| `iter`    | Readdir iterator and cookies                                                      |
-| `check`   | Full-tree fsck                                                                    |
-| `error`   | `Error<E>`, `CorruptKind`                                                         |
+| Module           | Contents                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| `format`         | Header and slot layouts, key layout, constants, per-page validation                   |
+| `store`          | `PageStore` trait, `MemStore`, `FileStore` (feature `std`)                            |
+| `hasher`         | `NameHasher` trait and the pinned SipHash-1-3                                         |
+| `leaf`           | Slotted leaf page operations on a byte buffer (no I/O)                                |
+| `inner`          | Inner page operations on a byte buffer (no I/O)                                       |
+| `page_workspace` | Page workspace for one call: buffered writes, append, move-last, truncate             |
+| `tree`           | `NameTree`, descent, insert/split (`tree/insert.rs`), remove/merge (`tree/remove.rs`) |
+| `iter`           | Readdir iterator and cookies                                                          |
+| `check`          | Full-tree fsck                                                                        |
+| `error`          | `Error<E>`, `CorruptKind`                                                             |
 
 ## Day-to-day workflow
 

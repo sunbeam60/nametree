@@ -1,4 +1,4 @@
-//! A thin layer over a [`PageStore`] for the duration of one public call.
+//! The page workspace: a thin layer over a [`PageStore`] for the duration of one public call.
 //!
 //! Every page the call touches is held in a working buffer. Modified pages are written once,
 //! when the call finishes, so a page changed twice (compaction, rename) costs one write, and a
@@ -22,7 +22,7 @@ struct Work {
     buf: Vec<u8>,
 }
 
-pub(crate) struct Pager<S> {
+pub(crate) struct PageWorkspace<S> {
     store: S,
     page_size: usize,
     validate: Validator,
@@ -37,7 +37,7 @@ pub(crate) struct Pager<S> {
 
 type Res<T, S> = Result<T, Error<<S as PageStore>::Error>>;
 
-impl<S: PageStore> Pager<S> {
+impl<S: PageStore> PageWorkspace<S> {
     pub(crate) fn new(store: S, validate: Validator) -> Self {
         let page_size = store.page_size();
         Self {

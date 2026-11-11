@@ -28,7 +28,7 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
             return Ok(None);
         };
         let leaf_index = path.leaf();
-        let page = self.pager.write(leaf_index)?;
+        let page = self.workspace.write(leaf_index)?;
         let old = leaf::value::<V>(page, slot);
         leaf::remove_at::<V>(page, slot);
         let now_empty = format::slot_count(page) == 0;
@@ -37,7 +37,7 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         if leaf_index == ROOT {
             if now_empty {
                 // An empty directory is a zero-length store.
-                self.pager.drop_all();
+                self.workspace.drop_all();
             }
         } else if used < self.underflow_limit() {
             self.rebalance(&mut path, LEAF_LEVEL)?;
@@ -47,7 +47,7 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
 
     /// Pages using fewer bytes than this (and not the root) are merged or rebalanced.
     fn underflow_limit(&self) -> usize {
-        self.pager.page_size() / UNDERFLOW_DIVISOR
+        self.workspace.page_size() / UNDERFLOW_DIVISOR
     }
 
     /// Fixes an underfull page at `level` of `path` by folding it into a sibling or borrowing
@@ -57,7 +57,7 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         loop {
             let parent = path.page(level + 1);
             let pos = path.pos(level + 1);
-            let page = self.pager.read(parent)?;
+            let page = self.workspace.read(parent)?;
             if format::slot_count(page) == 0 {
                 return Err(Error::Corrupt(CorruptKind::EmptyPage));
             }
@@ -95,7 +95,7 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
             self.free_page(pair.right, path)?;
 
             let parent = path.page(level + 1);
-            let page = self.pager.read(parent)?;
+            let page = self.workspace.read(parent)?;
             if parent == ROOT {
                 if format::slot_count(page) == 0 {
                     self.collapse_root(path)?;
@@ -113,14 +113,14 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
     /// across the boundary to even them out. Returns `true` if the right leaf was emptied (its
     /// separator is already removed from the parent; the caller frees the page).
     fn merge_leaves(&mut self, pair: Siblings) -> Res<bool, S> {
-        let capacity = self.pager.page_size() - HEADER_SIZE;
-        let mut left = self.pager.take_buf();
-        let mut right = self.pager.take_buf();
-        self.pager.copy_into(pair.left, &mut left)?;
-        self.pager.copy_into(pair.right, &mut right)?;
+        let capacity = self.workspace.page_size() - HEADER_SIZE;
+        let mut left = self.workspace.take_buf();
+        let mut right = self.workspace.take_buf();
+        self.workspace.copy_into(pair.left, &mut left)?;
+        self.workspace.copy_into(pair.right, &mut right)?;
         let folded = self.redistribute_leaves(pair, &left, &right, capacity);
-        self.pager.give_buf(left);
-        self.pager.give_buf(right);
+        self.workspace.give_buf(left);
+        self.workspace.give_buf(right);
         folded
     }
 
@@ -135,11 +135,11 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         let total = left_count + format::slot_count(right);
 
         if leaf::entry_bytes::<V>(left) + leaf::entry_bytes::<V>(right) <= capacity {
-            let page = self.pager.write(pair.left)?;
+            let page = self.workspace.write(pair.left)?;
             leaf::init(page);
             leaf::append_joined::<V>(page, left, right, 0..total);
             format::set_link(page, format::link(right));
-            inner::remove_at(self.pager.write(pair.parent)?, pair.separator);
+            inner::remove_at(self.workspace.write(pair.parent)?, pair.separator);
             return Ok(true);
         }
 
@@ -155,30 +155,34 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         let Some(cut) = cut.filter(|&cut| cut != left_count) else {
             return Ok(false);
         };
-        let page = self.pager.write(pair.left)?;
+        let page = self.workspace.write(pair.left)?;
         leaf::init(page);
         leaf::append_joined::<V>(page, left, right, 0..cut);
         format::set_link(page, pair.right);
 
-        let page = self.pager.write(pair.right)?;
+        let page = self.workspace.write(pair.right)?;
         leaf::init(page);
         leaf::append_joined::<V>(page, left, right, cut..total);
         format::set_link(page, format::link(right));
         let separator = run_first(key_prefix(leaf_slots::<V>(page)[0].key.get()));
 
-        inner::set_key(self.pager.write(pair.parent)?, pair.separator, separator);
+        inner::set_key(
+            self.workspace.write(pair.parent)?,
+            pair.separator,
+            separator,
+        );
         Ok(false)
     }
 
     /// Inner-page form of [`merge_leaves`](Self::merge_leaves). The parent's separator comes
     /// down between the two pages' slots, paired with the right page's leftmost child.
     fn merge_inner(&mut self, pair: Siblings, level: u32) -> Res<bool, S> {
-        let capacity = inner::capacity(self.pager.page_size());
-        let separator = inner::key(self.pager.read(pair.parent)?, pair.separator);
-        let mut left = self.pager.take_buf();
-        let mut right = self.pager.take_buf();
-        self.pager.copy_into(pair.left, &mut left)?;
-        self.pager.copy_into(pair.right, &mut right)?;
+        let capacity = inner::capacity(self.workspace.page_size());
+        let separator = inner::key(self.workspace.read(pair.parent)?, pair.separator);
+        let mut left = self.workspace.take_buf();
+        let mut right = self.workspace.take_buf();
+        self.workspace.copy_into(pair.left, &mut left)?;
+        self.workspace.copy_into(pair.right, &mut right)?;
 
         let left_count = format::slot_count(&left);
         let all = inner::Spliced::new(
@@ -190,12 +194,12 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         let link = format::link(&left);
         let folded = if total <= capacity {
             inner::build(
-                self.pager.write(pair.left)?,
+                self.workspace.write(pair.left)?,
                 level,
                 link,
                 all.slots(0..total),
             );
-            inner::remove_at(self.pager.write(pair.parent)?, pair.separator);
+            inner::remove_at(self.workspace.write(pair.parent)?, pair.separator);
             true
         } else {
             // Rotate through the parent: the middle slot's key becomes the new separator and
@@ -203,19 +207,24 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
             let mid = total / 2;
             if mid != left_count {
                 let (up_key, up_child) = all.get(mid);
-                inner::build(self.pager.write(pair.left)?, level, link, all.slots(0..mid));
                 inner::build(
-                    self.pager.write(pair.right)?,
+                    self.workspace.write(pair.left)?,
+                    level,
+                    link,
+                    all.slots(0..mid),
+                );
+                inner::build(
+                    self.workspace.write(pair.right)?,
                     level,
                     up_child,
                     all.slots(mid + 1..total),
                 );
-                inner::set_key(self.pager.write(pair.parent)?, pair.separator, up_key);
+                inner::set_key(self.workspace.write(pair.parent)?, pair.separator, up_key);
             }
             false
         };
-        self.pager.give_buf(left);
-        self.pager.give_buf(right);
+        self.workspace.give_buf(left);
+        self.workspace.give_buf(right);
         Ok(folded)
     }
 
@@ -223,9 +232,9 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
     /// last page moves into its place and its parent (and, for a leaf, the previous leaf) is
     /// repointed. Pages on `path` are renumbered to match.
     fn free_page(&mut self, index: u32, path: &mut Path) -> Res<(), S> {
-        let last = self.pager.count() - 1;
+        let last = self.workspace.count() - 1;
         if index == last {
-            self.pager.drop_last();
+            self.workspace.drop_last();
             return Ok(());
         }
         let (level, key) = self.first_key_below(last)?;
@@ -240,12 +249,12 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         };
         // Repoint first, while every page still sees the old page count: a page read from the
         // store after the move would fail validation for pointing at the old last page.
-        let parent = self.pager.write(route.page(level + 1))?;
+        let parent = self.workspace.write(route.page(level + 1))?;
         inner::set_child(parent, route.pos(level + 1), index);
         if let Some(previous) = previous {
-            format::set_link(self.pager.write(previous)?, index);
+            format::set_link(self.workspace.write(previous)?, index);
         }
-        self.pager.move_last(index)?;
+        self.workspace.move_last(index)?;
         path.renumber(last, index);
         Ok(())
     }
@@ -253,13 +262,13 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
     /// The level of page `index` and the first key of the leftmost leaf below it, which routes
     /// from the root back down through it.
     fn first_key_below(&mut self, index: u32) -> Res<(u32, u64), S> {
-        let level = format::level(self.pager.read(index)?);
+        let level = format::level(self.workspace.read(index)?);
         let mut page_index = index;
         for at in (LEAF_LEVEL..level).rev() {
-            page_index = format::link(self.pager.read(page_index)?);
+            page_index = format::link(self.workspace.read(page_index)?);
             self.expect_level(page_index, at)?;
         }
-        match leaf_slots::<V>(self.pager.read(page_index)?).first() {
+        match leaf_slots::<V>(self.workspace.read(page_index)?).first() {
             Some(slot) => Ok((level, slot.key.get())),
             None => Err(Error::Corrupt(CorruptKind::EmptyPage)),
         }
@@ -274,10 +283,13 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
         };
         // These pages are off the route, so check their levels: on a corrupt tree, treating a
         // leaf as an inner page would pick an arbitrary page and overwrite its link.
-        let mut index = inner::child(self.pager.read(route.page(level))?, route.pos(level) - 1);
+        let mut index = inner::child(
+            self.workspace.read(route.page(level))?,
+            route.pos(level) - 1,
+        );
         for at in (LEAF_LEVEL + 1..level).rev() {
             self.expect_level(index, at)?;
-            let page = self.pager.read(index)?;
+            let page = self.workspace.read(index)?;
             index = inner::child(page, format::slot_count(page));
         }
         self.expect_level(index, LEAF_LEVEL)?;
@@ -288,12 +300,12 @@ impl<S: PageStore, V: Value> Ctx<'_, S, V> {
     /// frees it. The tree loses a level each time.
     fn collapse_root(&mut self, path: &mut Path) -> Res<(), S> {
         loop {
-            let root = self.pager.read(ROOT)?;
+            let root = self.workspace.read(ROOT)?;
             if format::level(root) == LEAF_LEVEL || format::slot_count(root) > 0 {
                 return Ok(());
             }
             let child = format::link(root);
-            self.pager.copy_page(child, ROOT)?;
+            self.workspace.copy_page(child, ROOT)?;
             self.free_page(child, path)?;
         }
     }

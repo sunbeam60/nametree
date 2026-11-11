@@ -63,7 +63,7 @@ mod hasher;
 mod inner;
 mod iter;
 mod leaf;
-mod pager;
+mod page_workspace;
 mod store;
 mod tree;
 

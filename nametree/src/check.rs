@@ -10,7 +10,7 @@ use crate::format::{
     LEAF_LEVEL, MIN_COUNTER, NO_LINK, ROOT,
 };
 use crate::hasher::NameHasher;
-use crate::pager::Pager;
+use crate::page_workspace::PageWorkspace;
 use crate::store::PageStore;
 use crate::tree::NameTree;
 use crate::{inner, leaf};
@@ -45,16 +45,16 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
         value_ok: impl FnMut(&V) -> bool,
     ) -> Result<CheckReport, Error<S::Error>> {
         let pages = {
-            let mut pager = self.pager.borrow_mut();
-            pager.begin()?;
-            pager.discard();
-            pager.count()
+            let mut workspace = self.workspace.borrow_mut();
+            workspace.begin()?;
+            workspace.discard();
+            workspace.count()
         };
         if pages == 0 {
             return Ok(CheckReport::default());
         }
         let mut checker = Checker {
-            pager: &self.pager,
+            workspace: &self.workspace,
             hasher: &self.hasher,
             value_ok,
             visited: vec![false; pages as usize],
@@ -83,7 +83,7 @@ struct LeafInfo {
 
 struct Checker<'a, S, H, F> {
     /// Borrowed only for each page read, so `value_ok` can call back into the tree.
-    pager: &'a RefCell<Pager<S>>,
+    workspace: &'a RefCell<PageWorkspace<S>>,
     hasher: &'a H,
     value_ok: F,
     visited: Vec<bool>,
@@ -100,9 +100,9 @@ fn corrupt<T, E>(kind: CorruptKind) -> Result<T, Error<E>> {
 impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
     /// A validated copy of page `index`.
     fn read(&self, index: u32) -> Res<Vec<u8>, S> {
-        let pager = self.pager.borrow();
-        let mut page = vec![0; pager.page_size()];
-        pager.read_detached(index, &mut page)?;
+        let workspace = self.workspace.borrow();
+        let mut page = vec![0; workspace.page_size()];
+        workspace.read_detached(index, &mut page)?;
         Ok(page)
     }
 
