@@ -60,20 +60,20 @@ impl<'a, S: PageStore, H: NameHasher, V: Value, F: FnMut(&V) -> bool> Iter<'a, S
 
     /// Loads the leaf holding the first key above the cookie. `false` if the tree is empty.
     fn start(&mut self) -> Result<bool, Error<S::Error>> {
-        let mut pager = self.tree.pager.borrow_mut();
-        pager.begin()?;
-        if pager.count() == 0 {
-            pager.discard();
+        let mut workspace = self.tree.workspace.borrow_mut();
+        workspace.begin()?;
+        if workspace.count() == 0 {
+            workspace.discard();
             return Ok(false);
         }
         let first = self.last_key.saturating_add(1);
-        self.leaf = pager.take_buf();
+        self.leaf = workspace.take_buf();
         let mut path = Path::new();
-        let mut ctx = Ctx::<S, V>::new(&mut pager);
+        let mut ctx = Ctx::<S, V>::new(&mut workspace);
         let loaded = ctx
             .descend(first, &mut path)
-            .and_then(|()| ctx.pager.copy_into(path.leaf(), &mut self.leaf));
-        pager.discard();
+            .and_then(|()| ctx.workspace.copy_into(path.leaf(), &mut self.leaf));
+        workspace.discard();
         loaded?;
         self.next_slot = leaf::lower_bound::<V>(&self.leaf, first);
         Ok(true)
@@ -86,7 +86,7 @@ impl<'a, S: PageStore, H: NameHasher, V: Value, F: FnMut(&V) -> bool> Iter<'a, S
             return Ok(false);
         }
         self.tree
-            .pager
+            .workspace
             .borrow()
             .read_detached(next, &mut self.leaf)?;
         if format::level(&self.leaf) != LEAF_LEVEL {
@@ -160,4 +160,18 @@ impl<S: PageStore, H: NameHasher, V: Value, F: FnMut(&V) -> bool> Iterator
 impl<S: PageStore, H: NameHasher, V: Value, F: FnMut(&V) -> bool> FusedIterator
     for Iter<'_, S, H, V, F>
 {
+}
+
+impl<S, H, V, F> Drop for Iter<'_, S, H, V, F> {
+    /// Hands the leaf buffer back to the tree's workspace, so later calls and listings reuse it.
+    fn drop(&mut self) {
+        // An iterator that never started holds no buffer. If the workspace is busy, which no
+        // current caller allows, the buffer is simply freed.
+        if self.leaf.is_empty() {
+            return;
+        }
+        if let Ok(mut workspace) = self.tree.workspace.try_borrow_mut() {
+            workspace.give_buf(core::mem::take(&mut self.leaf));
+        }
+    }
 }

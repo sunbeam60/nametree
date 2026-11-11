@@ -1,4 +1,4 @@
-//! A thin layer over a [`PageStore`] for the duration of one public call.
+//! The page workspace: a thin layer over a [`PageStore`] for the duration of one public call.
 //!
 //! Every page the call touches is held in a working buffer. Modified pages are written once,
 //! when the call finishes, so a page changed twice (compaction, rename) costs one write, and a
@@ -22,7 +22,7 @@ struct Work {
     buf: Vec<u8>,
 }
 
-pub(crate) struct Pager<S> {
+pub(crate) struct PageWorkspace<S> {
     store: S,
     page_size: usize,
     validate: Validator,
@@ -37,7 +37,21 @@ pub(crate) struct Pager<S> {
 
 type Res<T, S> = Result<T, Error<<S as PageStore>::Error>>;
 
-impl<S: PageStore> Pager<S> {
+/// Buffer handling needs nothing from the store, so it is available without the
+/// [`PageStore`] bound (for example to an iterator's `Drop`).
+impl<S> PageWorkspace<S> {
+    /// A page-sized buffer with unspecified contents.
+    pub(crate) fn take_buf(&mut self) -> Vec<u8> {
+        self.spare.pop().unwrap_or_else(|| vec![0; self.page_size])
+    }
+
+    /// Returns a buffer from [`take_buf`](Self::take_buf) for reuse.
+    pub(crate) fn give_buf(&mut self, buf: Vec<u8>) {
+        self.spare.push(buf);
+    }
+}
+
+impl<S: PageStore> PageWorkspace<S> {
     pub(crate) fn new(store: S, validate: Validator) -> Self {
         let page_size = store.page_size();
         Self {
@@ -108,16 +122,6 @@ impl<S: PageStore> Pager<S> {
     fn release(&mut self) {
         let spare = &mut self.spare;
         spare.extend(self.work.drain(..).map(|work| work.buf));
-    }
-
-    /// A page-sized buffer with unspecified contents.
-    pub(crate) fn take_buf(&mut self) -> Vec<u8> {
-        self.spare.pop().unwrap_or_else(|| vec![0; self.page_size])
-    }
-
-    /// Returns a buffer from [`take_buf`](Self::take_buf) for reuse.
-    pub(crate) fn give_buf(&mut self, buf: Vec<u8>) {
-        self.spare.push(buf);
     }
 
     fn find(&self, index: u32) -> Option<usize> {

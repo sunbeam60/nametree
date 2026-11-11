@@ -10,7 +10,7 @@ use crate::format::{
     LEAF_LEVEL, MIN_COUNTER, NO_LINK, ROOT,
 };
 use crate::hasher::NameHasher;
-use crate::pager::Pager;
+use crate::page_workspace::PageWorkspace;
 use crate::store::PageStore;
 use crate::tree::NameTree;
 use crate::{inner, leaf};
@@ -45,25 +45,26 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
         value_ok: impl FnMut(&V) -> bool,
     ) -> Result<CheckReport, Error<S::Error>> {
         let pages = {
-            let mut pager = self.pager.borrow_mut();
-            pager.begin()?;
-            pager.discard();
-            pager.count()
+            let mut workspace = self.workspace.borrow_mut();
+            workspace.begin()?;
+            workspace.discard();
+            workspace.count()
         };
         if pages == 0 {
             return Ok(CheckReport::default());
         }
         let mut checker = Checker {
-            pager: &self.pager,
+            workspace: &self.workspace,
             hasher: &self.hasher,
             value_ok,
             visited: vec![false; pages as usize],
             leaves: Vec::new(),
             names: 0,
+            spare: Vec::new(),
         };
-        let height = format::level(&checker.read(ROOT)?);
-        checker.walk::<V>(ROOT, height, 0, None)?;
-        checker.finish()?;
+        let result = checker.run::<V>();
+        checker.release();
+        let height = result?;
         Ok(CheckReport {
             pages,
             leaves: checker.leaves.len() as u32,
@@ -83,12 +84,15 @@ struct LeafInfo {
 
 struct Checker<'a, S, H, F> {
     /// Borrowed only for each page read, so `value_ok` can call back into the tree.
-    pager: &'a RefCell<Pager<S>>,
+    workspace: &'a RefCell<PageWorkspace<S>>,
     hasher: &'a H,
     value_ok: F,
     visited: Vec<bool>,
     leaves: Vec<LeafInfo>,
     names: u64,
+    /// Page buffers not in use. The walk holds one page per level, so this stays as small as
+    /// the tree is high; the buffers come from, and go back to, the workspace.
+    spare: Vec<Vec<u8>>,
 }
 
 type Res<T, S> = Result<T, Error<<S as PageStore>::Error>>;
@@ -98,12 +102,41 @@ fn corrupt<T, E>(kind: CorruptKind) -> Result<T, Error<E>> {
 }
 
 impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
-    /// A validated copy of page `index`.
-    fn read(&self, index: u32) -> Res<Vec<u8>, S> {
-        let pager = self.pager.borrow();
-        let mut page = vec![0; pager.page_size()];
-        pager.read_detached(index, &mut page)?;
-        Ok(page)
+    /// Checks the whole tree and returns its height.
+    fn run<V: Value>(&mut self) -> Res<u32, S>
+    where
+        F: FnMut(&V) -> bool,
+    {
+        let root = self.read(ROOT)?;
+        let height = format::level(&root);
+        self.spare.push(root);
+        self.walk::<V>(ROOT, height, 0, None)?;
+        self.finish()?;
+        Ok(height)
+    }
+
+    /// A validated copy of page `index`, in a buffer to hand back to `spare` when done.
+    fn read(&mut self, index: u32) -> Res<Vec<u8>, S> {
+        let mut page = match self.spare.pop() {
+            Some(buf) => buf,
+            None => self.workspace.borrow_mut().take_buf(),
+        };
+        let read = self.workspace.borrow().read_detached(index, &mut page);
+        match read {
+            Ok(()) => Ok(page),
+            Err(e) => {
+                self.spare.push(page);
+                Err(e)
+            }
+        }
+    }
+
+    /// Gives every spare buffer back to the workspace, for reuse by later calls.
+    fn release(&mut self) {
+        let mut workspace = self.workspace.borrow_mut();
+        for buf in self.spare.drain(..) {
+            workspace.give_buf(buf);
+        }
     }
 
     /// Checks the subtree at `index`, which must be at `level` and hold only keys in
@@ -118,13 +151,30 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
         }
         *seen = true;
         let page = self.read(index)?;
-        if format::level(&page) != level {
+        let result = self.check_page::<V>(index, level, low, high, &page);
+        self.spare.push(page);
+        result
+    }
+
+    /// Checks page `index`, already read into `page`, and the subtree below it.
+    fn check_page<V: Value>(
+        &mut self,
+        index: u32,
+        level: u32,
+        low: u64,
+        high: Option<u64>,
+        page: &[u8],
+    ) -> Res<(), S>
+    where
+        F: FnMut(&V) -> bool,
+    {
+        if format::level(page) != level {
             return corrupt(CorruptKind::LevelMismatch);
         }
         let keys: Vec<u64> = if level == LEAF_LEVEL {
-            leaf_slots::<V>(&page).iter().map(|s| s.key.get()).collect()
+            leaf_slots::<V>(page).iter().map(|s| s.key.get()).collect()
         } else {
-            inner_slots(&page).iter().map(|s| s.key.get()).collect()
+            inner_slots(page).iter().map(|s| s.key.get()).collect()
         };
         if keys.windows(2).any(|w| w[0] >= w[1]) {
             return corrupt(CorruptKind::KeyOrder);
@@ -136,7 +186,7 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
             return corrupt(CorruptKind::Separator);
         }
         if level == LEAF_LEVEL {
-            return self.check_leaf::<V>(index, &page);
+            return self.check_leaf::<V>(index, page);
         }
         // Lookups route by a run's highest possible key, which only reaches the run's leaf if
         // every separator is a run's lowest possible key (collision counter 1).
@@ -149,7 +199,7 @@ impl<S: PageStore, H: NameHasher, F> Checker<'_, S, H, F> {
         for pos in 0..=keys.len() {
             let child_low = if pos == 0 { low } else { keys[pos - 1] };
             let child_high = keys.get(pos).copied().or(high);
-            self.walk::<V>(inner::child(&page, pos), level - 1, child_low, child_high)?;
+            self.walk::<V>(inner::child(page, pos), level - 1, child_low, child_high)?;
         }
         Ok(())
     }

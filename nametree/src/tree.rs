@@ -10,7 +10,7 @@ use crate::format::{
 };
 use crate::hasher::NameHasher;
 use crate::iter::Iter;
-use crate::pager::Pager;
+use crate::page_workspace::PageWorkspace;
 use crate::store::PageStore;
 use crate::{inner, leaf};
 
@@ -29,7 +29,7 @@ pub(crate) type Res<T, S> = Result<T, Error<<S as PageStore>::Error>>;
 /// count at the start of every call. It is not `Sync`: share it between threads by giving each
 /// thread its own tree over its own store handle.
 pub struct NameTree<S, H, V> {
-    pub(crate) pager: RefCell<Pager<S>>,
+    pub(crate) workspace: RefCell<PageWorkspace<S>>,
     pub(crate) hasher: H,
     value: PhantomData<fn() -> V>,
 }
@@ -42,17 +42,17 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
         if !(format::min_page_size::<V>()..=MAX_PAGE_SIZE).contains(&page_size) {
             return Err(Error::PageSize);
         }
-        let mut pager = Pager::new(store, format::validate_page::<V>);
-        pager.begin()?;
-        let root = if pager.count() > 0 {
-            pager.read(ROOT).map(drop)
+        let mut workspace = PageWorkspace::new(store, format::validate_page::<V>);
+        workspace.begin()?;
+        let root = if workspace.count() > 0 {
+            workspace.read(ROOT).map(drop)
         } else {
             Ok(())
         };
-        pager.discard();
+        workspace.discard();
         root?;
         Ok(Self {
-            pager: RefCell::new(pager),
+            workspace: RefCell::new(workspace),
             hasher,
             value: PhantomData,
         })
@@ -62,17 +62,20 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
     pub fn get(&self, name: &[u8]) -> Result<Option<V>, Error<S::Error>> {
         check_name(name)?;
         let prefix = hash_prefix(self.hasher.hash(name));
-        let mut pager = self.pager.borrow_mut();
-        pager.begin()?;
-        let mut ctx = Ctx::<S, V>::new(&mut pager);
+        let mut workspace = self.workspace.borrow_mut();
+        workspace.begin()?;
+        let mut ctx = Ctx::<S, V>::new(&mut workspace);
         let mut path = Path::new();
         let found = ctx
             .find(prefix, name, &mut path)
             .and_then(|slot| match slot {
-                Some(slot) => Ok(Some(leaf::value::<V>(ctx.pager.read(path.leaf())?, slot))),
+                Some(slot) => Ok(Some(leaf::value::<V>(
+                    ctx.workspace.read(path.leaf())?,
+                    slot,
+                ))),
                 None => Ok(None),
             });
-        pager.discard();
+        workspace.discard();
         found
     }
 
@@ -121,10 +124,10 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
 
     /// `true` if the tree holds no names (its store is zero-length).
     pub fn is_empty(&self) -> Result<bool, Error<S::Error>> {
-        let mut pager = self.pager.borrow_mut();
-        pager.begin()?;
-        let empty = pager.count() == 0;
-        pager.discard();
+        let mut workspace = self.workspace.borrow_mut();
+        workspace.begin()?;
+        let empty = workspace.count() == 0;
+        workspace.discard();
         Ok(empty)
     }
 
@@ -154,7 +157,7 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
 
     /// The store's page size in bytes.
     pub fn page_size(&self) -> usize {
-        self.pager.borrow().page_size()
+        self.workspace.borrow().page_size()
     }
 
     /// The hasher.
@@ -164,26 +167,26 @@ impl<S: PageStore, H: NameHasher, V: Value> NameTree<S, H, V> {
 
     /// The underlying store. Changing it behind the tree's back can corrupt the tree.
     pub fn store_mut(&mut self) -> &mut S {
-        self.pager.get_mut().store_mut()
+        self.workspace.get_mut().store_mut()
     }
 
     /// Consumes the tree and returns the store.
     pub fn into_inner(self) -> S {
-        self.pager.into_inner().into_store()
+        self.workspace.into_inner().into_store()
     }
 
     /// Runs one mutating call: everything it changes is buffered and written once at the end,
     /// and nothing is written if it fails.
     fn mutate<R>(&mut self, op: impl FnOnce(&mut Ctx<'_, S, V>) -> Res<R, S>) -> Res<R, S> {
-        let pager = self.pager.get_mut();
-        pager.begin()?;
-        match op(&mut Ctx::new(pager)) {
+        let workspace = self.workspace.get_mut();
+        workspace.begin()?;
+        match op(&mut Ctx::new(workspace)) {
             Ok(result) => {
-                pager.flush()?;
+                workspace.flush()?;
                 Ok(result)
             }
             Err(e) => {
-                pager.discard();
+                workspace.discard();
                 Err(e)
             }
         }
@@ -254,16 +257,16 @@ impl Path {
     }
 }
 
-/// One call's view of the tree: the pager plus the value type.
+/// One call's view of the tree: the workspace plus the value type.
 pub(crate) struct Ctx<'a, S, V> {
-    pub(crate) pager: &'a mut Pager<S>,
+    pub(crate) workspace: &'a mut PageWorkspace<S>,
     value: PhantomData<fn() -> V>,
 }
 
 impl<'a, S: PageStore, V: Value> Ctx<'a, S, V> {
-    pub(crate) fn new(pager: &'a mut Pager<S>) -> Self {
+    pub(crate) fn new(workspace: &'a mut PageWorkspace<S>) -> Self {
         Self {
-            pager,
+            workspace,
             value: PhantomData,
         }
     }
@@ -278,11 +281,11 @@ impl<'a, S: PageStore, V: Value> Ctx<'a, S, V> {
     /// the page reached at `level`. Checks that every page has the level its parent implies.
     fn descend_to(&mut self, key: u64, level: u32, path: &mut Path) -> Res<u32, S> {
         let mut index = ROOT;
-        let mut at = format::level(self.pager.read(ROOT)?);
+        let mut at = format::level(self.workspace.read(ROOT)?);
         path.height = at;
         while at > level {
             self.expect_level(index, at)?;
-            let (pos, child) = inner::route(self.pager.read(index)?, key);
+            let (pos, child) = inner::route(self.workspace.read(index)?, key);
             path.set(at, index, pos);
             index = child;
             at -= 1;
@@ -295,7 +298,7 @@ impl<'a, S: PageStore, V: Value> Ctx<'a, S, V> {
     /// Checks that page `index` sits at `level`, as its parent implies. Every page reached
     /// through a child pointer must pass this before it is used as a leaf or inner page.
     pub(crate) fn expect_level(&mut self, index: u32, level: u32) -> Res<(), S> {
-        if format::level(self.pager.read(index)?) == level {
+        if format::level(self.workspace.read(index)?) == level {
             Ok(())
         } else {
             Err(Error::Corrupt(CorruptKind::LevelMismatch))
@@ -309,11 +312,11 @@ impl<'a, S: PageStore, V: Value> Ctx<'a, S, V> {
         name: &[u8],
         path: &mut Path,
     ) -> Res<Option<usize>, S> {
-        if self.pager.count() == 0 {
+        if self.workspace.count() == 0 {
             return Ok(None);
         }
         self.descend(run_last(prefix), path)?;
-        let page = self.pager.read(path.leaf())?;
+        let page = self.workspace.read(path.leaf())?;
         Ok(leaf::find::<V>(page, prefix, name))
     }
 }
